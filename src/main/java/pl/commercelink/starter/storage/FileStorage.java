@@ -180,17 +180,32 @@ public class FileStorage {
     }
 
     public Map<String, LocalDateTime> getAllObjectLastModified(String bucket, String prefix) {
-        ListObjectsV2Response response = listObjects(bucket, prefix);
-
         Map<String, LocalDateTime> lastModifiedMap = new HashMap<>();
 
-        for (S3Object object : response.contents()) {
+        for (S3Object object : listAllObjects(bucket, prefix)) {
             String key = object.key();
             LocalDateTime lastModified = object.lastModified().atZone(ZoneId.systemDefault()).toLocalDateTime();
             lastModifiedMap.put(key, lastModified);
         }
 
         return lastModifiedMap;
+    }
+
+    private List<S3Object> listAllObjects(String bucket, String prefix) {
+        List<S3Object> objects = new ArrayList<>();
+        String continuationToken = null;
+
+        do {
+            ListObjectsV2Response response = s3Client.listObjectsV2(ListObjectsV2Request.builder()
+                    .bucket(bucket)
+                    .prefix(prefix)
+                    .continuationToken(continuationToken)
+                    .build());
+            objects.addAll(response.contents());
+            continuationToken = response.nextContinuationToken();
+        } while (continuationToken != null);
+
+        return objects;
     }
 
 }
