@@ -53,10 +53,10 @@ public class FileStorage {
         return responseBytes.asByteArray();
     }
 
-    public Pair<String,InputStreamReader> findNewest(String bucketName, String prefix) {
+    public Pair<String,InputStreamReader> findNewestByLastModified(String bucketName, String prefix) {
         ListObjectsV2Response listObjects = listObjects(bucketName, prefix);
 
-        return findNewest(listObjects)
+        return newestByLastModified(listObjects)
                 .map(s3Object -> {
                     ResponseInputStream<GetObjectResponse> response = s3Client.getObject(GetObjectRequest.builder()
                             .bucket(bucketName)
@@ -68,13 +68,13 @@ public class FileStorage {
                 .orElse(null);
     }
 
-    public Optional<String> findNewestFileName(String bucketName, String prefix) {
+    public Optional<String> findNewestFileNameByLastModified(String bucketName, String prefix) {
         ListObjectsV2Response listObjects = listObjects(bucketName, prefix);
-        return findNewest(listObjects)
+        return newestByLastModified(listObjects)
                 .map(s3Object -> Paths.get(s3Object.key()).getFileName().toString());
     }
 
-    public List<Pair<String, String>> findTopN(String bucketName, String prefix,int n) {
+    public List<Pair<String, String>> findTopNByLastModified(String bucketName, String prefix, int n) {
         ListObjectsV2Response listObjects = listObjects(bucketName, prefix);
 
         return listObjects.contents().stream()
@@ -89,9 +89,9 @@ public class FileStorage {
                 .collect(Collectors.toList());
     }
 
-    public byte[] findNewestAsBytes(String bucketName, String prefix) {
+    public byte[] findNewestAsBytesByLastModified(String bucketName, String prefix) {
         ListObjectsV2Response listObjects = listObjects(bucketName, prefix);
-        return findNewest(listObjects)
+        return newestByLastModified(listObjects)
                 .map(s3Object -> {
                     ResponseBytes<?> responseBytes = s3Client.getObject(GetObjectRequest.builder()
                             .bucket(bucketName)
@@ -99,6 +99,88 @@ public class FileStorage {
                             .build(), ResponseTransformer.toBytes());
                     return responseBytes.asByteArray();
                 }).orElse(new byte[0]);
+    }
+
+    public Pair<String, InputStreamReader> findNewestByKeyOrder(String bucketName, String prefix) {
+        return firstKeyOf(bucketName, prefix)
+                .map(key -> {
+                    ResponseInputStream<GetObjectResponse> response = s3Client.getObject(GetObjectRequest.builder()
+                            .bucket(bucketName)
+                            .key(key)
+                            .build());
+                    return Pair.of(fileNameOf(key), new InputStreamReader(response));
+                })
+                .orElse(null);
+    }
+
+    public Optional<String> findNewestFileNameByKeyOrder(String bucketName, String prefix) {
+        return firstKeyOf(bucketName, prefix).map(FileStorage::fileNameOf);
+    }
+
+    public byte[] findNewestAsBytesByKeyOrder(String bucketName, String prefix) {
+        return firstKeyOf(bucketName, prefix)
+                .map(key -> {
+                    ResponseBytes<?> responseBytes = s3Client.getObject(GetObjectRequest.builder()
+                            .bucket(bucketName)
+                            .key(key)
+                            .build(), ResponseTransformer.toBytes());
+                    return responseBytes.asByteArray();
+                })
+                .orElse(new byte[0]);
+    }
+
+    public List<Pair<String, String>> findTopNByKeyOrder(String bucketName, String prefix, int n) {
+        if (n <= 0) {
+            return List.of();
+        }
+        return listObjects(bucketName, prefix, n).contents().stream()
+                .map(s3Object -> {
+                    String fileName = fileNameOf(s3Object.key());
+                    return Pair.of(fileName, readableTimestampOf(fileName, s3Object.lastModified()));
+                })
+                .collect(Collectors.toList());
+    }
+
+    public List<String> findKeysByKeyOrder(String bucketName, String prefix, int limit) {
+        if (limit <= 0) {
+            return List.of();
+        }
+        return listObjects(bucketName, prefix, limit).contents().stream()
+                .map(S3Object::key)
+                .toList();
+    }
+
+    public List<String> findAllKeysByKeyOrder(String bucketName, String prefix) {
+        List<String> keys = new ArrayList<>();
+        String continuationToken = null;
+        do {
+            ListObjectsV2Response response = s3Client.listObjectsV2(ListObjectsV2Request.builder()
+                    .bucket(bucketName)
+                    .prefix(prefix)
+                    .continuationToken(continuationToken)
+                    .build());
+            response.contents().forEach(s3Object -> keys.add(s3Object.key()));
+            continuationToken = Boolean.TRUE.equals(response.isTruncated())
+                    ? response.nextContinuationToken()
+                    : null;
+        } while (continuationToken != null);
+        return List.copyOf(keys);
+    }
+
+    private Optional<String> firstKeyOf(String bucketName, String prefix) {
+        return listObjects(bucketName, prefix, 1).contents().stream()
+                .findFirst()
+                .map(S3Object::key);
+    }
+
+    private static String fileNameOf(String key) {
+        return Paths.get(key).getFileName().toString();
+    }
+
+    private static String readableTimestampOf(String fileName, Instant lastModified) {
+        Instant instant = TimeOrderedFileName.instantOf(fileName).orElse(lastModified);
+        return LocalDateTime.ofInstant(instant, ZoneId.systemDefault())
+                .format(DateTimeFormatter.ofPattern(DATE_TIME_FORMAT));
     }
 
     public List<Reader> find(String bucketName, String prefix) {
@@ -146,7 +228,15 @@ public class FileStorage {
                 .build());
     }
 
-    private Optional<S3Object> findNewest(ListObjectsV2Response listObjects) {
+    private ListObjectsV2Response listObjects(String bucketName, String prefix, int maxKeys) {
+        return s3Client.listObjectsV2(ListObjectsV2Request.builder()
+                .bucket(bucketName)
+                .prefix(prefix)
+                .maxKeys(maxKeys)
+                .build());
+    }
+
+    private Optional<S3Object> newestByLastModified(ListObjectsV2Response listObjects) {
         return listObjects.contents().stream().max(Comparator.comparing(S3Object::lastModified));
     }
 
